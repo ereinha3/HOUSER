@@ -1,0 +1,8 @@
+edge_classification/models/weights/
+link_prediction/models/weights/
+edge_classification/amazon/
+link_prediction/amazon/
+link_prediction/__pycache__
+edge_classification/__pycache__
+link_prediction/models/__pycache__
+edge_classification/models/__pycache__
