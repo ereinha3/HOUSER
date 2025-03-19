@@ -1,6 +1,7 @@
 # Ignore model weights as these are too large to commit for correlation matrix (instruction to run and save weights in README)
 edge_classification/models/weights/*
 link_prediction/models/weights/*
+eval/models/weights/*
 
 # Ignore pycaches
 link_prediction/__pycache__

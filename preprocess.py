@@ -34,8 +34,8 @@ def get_df(file_path:str):
 
     df = pd.DataFrame(reviews, columns=["user", "item", "rating"])
 
-    print(f"{df['user'].nunique()} users in unmodified dataset.")
-    print(f"{df['item'].nunique()} items in unmodified dataset.")
+    print(f"{df['user'].nunique()} users in dataset.")
+    print(f"{df['item'].nunique()} items in dataset.")
 
     return df
 

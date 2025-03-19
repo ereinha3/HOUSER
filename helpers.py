@@ -29,7 +29,7 @@ def normalize(input:torch.tensor):
     max_val = torch.max(input)
     min_val = torch.min(input)
     if max_val == min_val:
-        raise ZeroDivisionError('All values in tensor are the same')
+        return input
     return (input - min_val) / (max_val - min_val)
 
 def combine_with_alpha(lp_predictions:torch.tensor, ec_predictions:torch.tensor, alpha:float=0.5):

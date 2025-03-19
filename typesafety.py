@@ -171,7 +171,7 @@ class HeuristicType(Enum):
 class HouserType(Enum):
     ALPHA = 'alpha'
     HARMONIC = 'harmonic'
-    MLP = 'mlp'
+    EVAL = 'gcn'
 
 
 def get_weights_filepath(pred_type:PredType, model_type:ModelType, subsampling_percent:float, training_split:float, heuristic_type:HeuristicType=HeuristicType.NONE) -> str:

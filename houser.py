@@ -10,7 +10,6 @@ from preprocess import get_subsampled_edge_indexes_with_ratings_and_neg_edges
 from typesafety import EdgeData, get_houser_weights_filepath, get_weights_filepath, ModelType, PredType, HouserType
 from link_prediction.autorun import autorun as autorun_lp
 from edge_classification.autorun import autorun as autorun_ec
-from learn_houser import CombinationModel, train
 from learn_alpha import train as learn_alpha
 from link_prediction.models.gnn import GCN as lpGCN, run as run_lp
 from edge_classification.models.gnn import GCN as ecGCN, run as run_ec
@@ -44,14 +43,14 @@ test_edges = torch.cat([pos_test, neg_test], dim=1)
 
 lp_gcn_weights_filepath = get_weights_filepath(pred_type=PredType.LP, model_type=ModelType.GNN, subsampling_percent=edge_data.subsampling_percent, training_split=edge_data.train_ratio)
 if not os.path.exists(lp_gcn_weights_filepath):
-    _, lp_gcn = run_lp(edge_data=edge_data, with_eval=False)
+    lp_gcn = run_lp(edge_data=edge_data, with_eval=False)
 else: 
     lp_gcn = lpGCN(num_users=num_users, num_items=num_items)
     lp_gcn.load_state_dict(torch.load(lp_gcn_weights_filepath, weights_only=False))
 
 ec_gcn_weights_filepath = get_weights_filepath(pred_type=PredType.EC, model_type=ModelType.GNN, subsampling_percent=edge_data.subsampling_percent, training_split=edge_data.train_ratio)
 if not os.path.exists(ec_gcn_weights_filepath):
-    _, _, ec_gcn = run_ec(edge_data=edge_data)
+    ec_gcn = run_ec(edge_data=edge_data, with_eval=False)
 else:
     ec_gcn = ecGCN(num_users=num_users, num_items=num_items)
     ec_gcn.load_state_dict(torch.load(ec_gcn_weights_filepath, weights_only=False))
@@ -70,20 +69,26 @@ test_labels = torch.cat([test_ratings, torch.zeros(neg_test.size(1), dtype=torch
 
 eval_gcn_weights_filepath = get_weights_filepath(pred_type=PredType.EVAL, model_type=ModelType.GNN, subsampling_percent=edge_data.subsampling_percent, training_split=edge_data.train_ratio)
 if not os.path.exists(eval_gcn_weights_filepath):
-    _, eval_gcn = run_eval(edge_data=edge_data, with_eval=False)
+    eval_gcn = run_eval(edge_data=edge_data, with_eval=False)
 else:
     eval_gcn = evalGCN(num_users=num_users, num_items=num_items)
     eval_gcn.load_state_dict(torch.load(eval_gcn_weights_filepath, weights_only=False))
     
 
 model_metrics = {
-    'houser': {
+    HouserType.ALPHA: {
         'recall@k': [],
         'precision@k': [],
         'auc': [],
         'mrr': [],
     },
-    'eval': {
+    HouserType.HARMONIC: {
+        'recall@k': [],
+        'precision@k': [],
+        'auc': [],
+        'mrr': [],
+    },
+    HouserType.EVAL: {
         'recall@k': [],
         'precision@k': [],
         'auc': [],
@@ -93,10 +98,8 @@ model_metrics = {
 
 k = 10
 
-houser_type = HouserType.HARMONIC
 
-if houser_type == HouserType.ALPHA:
-    alpha = learn_alpha(train_edges=train_edges, test_edges=test_edges, train_labels=train_labels, test_labels=test_labels, lp_gnn=lp_gcn, ec_gnn=ec_gcn)
+alpha = learn_alpha(train_edges=train_edges, test_edges=test_edges, train_labels=train_labels, test_labels=test_labels, lp_gnn=lp_gcn, ec_gnn=ec_gcn)
 
 # weights_filepath = get_houser_weights_filepath(subsampling_percent=edge_data.subsampling_percent, training_split=edge_data.train_ratio)
 # model = CombinationModel()
@@ -129,25 +132,24 @@ with torch.no_grad():
 
         for model in model_metrics.keys():
 
-            if model == 'houser':
+            if model == HouserType.ALPHA or model == HouserType.HARMONIC:
 
                 lp_pred_scores = lp_gcn.predict(edge_index)  # Shape: [num_unseen_items]
                 lp_pred_scores = normalize(lp_pred_scores)
                 ec_pred_scores = ec_gcn.predict(edge_index)
-                ec_pred_scores = normalize(ec_pred_scores)
 
-                if houser_type == HouserType.ALPHA:
+                if model == HouserType.ALPHA:
                     predictions = combine_with_alpha(lp_predictions=lp_pred_scores, ec_predictions=ec_pred_scores, alpha=alpha)
 
-                if houser_type == HouserType.HARMONIC:
+                if model == HouserType.HARMONIC:
+                    ec_pred_scores = (ec_pred_scores > 0.5).int()
                     predictions = harmonic_mean(lp_predictions=lp_pred_scores, ec_predictions=ec_pred_scores)
                     
-                predictions = normalize(predictions)
-
-            elif model == 'eval':
+            elif model == HouserType.EVAL:
 
                 predictions = eval_gcn.predict(edge_index)
-                predictions = normalize(predictions)
+
+            predictions = normalize(predictions)
 
             # Rank items by predicted scores
             _, topk_indices = torch.topk(predictions, k=k)
@@ -188,17 +190,18 @@ for model in model_metrics.keys():
     model_metrics[model]['f1'] = (2 * recall * precision) / (recall + precision) if (recall + precision) > 0 else 0
 
 for model in model_metrics.keys():
-    print(f'Metrics for {model}')
+    model_name = f'{model.value.capitalize()} Houser' if model != HouserType.EVAL else 'Evaluation GCN'
+    print(f'Metrics for {model_name}')
     for metric in model_metrics[model].keys():
         print(f'\t{metric}: {model_metrics[model][metric]}')
 
 metrics_df = pd.DataFrame({
-    'Model': ['Eval GNN', 'HOUSER'],
-    'Recall@K': [model_metrics['eval']['recall@k'], model_metrics['houser']['recall@k']],
-    'Precision@K': [model_metrics['eval']['precision@k'], model_metrics['houser']['precision@k']],
-    'F1': [model_metrics['eval']['f1'], model_metrics['houser']['f1']],
-    'AUC': [model_metrics['eval']['auc'], model_metrics['houser']['auc']],
-    'MRR': [model_metrics['eval']['mrr'], model_metrics['houser']['mrr']],
+    'Model': ['Eval GNN', 'Harmonic HOUSER', 'Alpha HOUSER'],
+    'Recall@K': [model_metrics[HouserType.EVAL]['recall@k'], model_metrics[HouserType.HARMONIC]['recall@k'], model_metrics[HouserType.ALPHA]['recall@k']],
+    'Precision@K': [model_metrics[HouserType.EVAL]['precision@k'], model_metrics[HouserType.HARMONIC]['precision@k'], model_metrics[HouserType.ALPHA]['precision@k']],
+    'F1': [model_metrics[HouserType.EVAL]['f1'], model_metrics[HouserType.HARMONIC]['f1'], model_metrics[HouserType.ALPHA]['f1']],
+    'AUC': [model_metrics[HouserType.EVAL]['auc'], model_metrics[HouserType.HARMONIC]['auc'], model_metrics[HouserType.ALPHA]['auc']],
+    'MRR': [model_metrics[HouserType.EVAL]['mrr'], model_metrics[HouserType.HARMONIC]['mrr'], model_metrics[HouserType.ALPHA]['mrr']],
 })
 
 # Melt the DataFrame for easier plotting
@@ -214,6 +217,6 @@ plt.ylim(0, 1)  # Set y-axis limits to 0-1 for better visualization
 plt.legend(title='Model', bbox_to_anchor=(1.05, 1), loc='upper left')
 plt.tight_layout()
 
-img_filepath = f'metrics/{houser_type.value}_houser.png'
+img_filepath = f'metrics/housers_vs_eval.png'
 plt.savefig(img_filepath)
 print(f"Results are shown in command line and graphs are in {img_filepath} folder")

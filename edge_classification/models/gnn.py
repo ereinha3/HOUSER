@@ -194,7 +194,11 @@ def run(edge_data:EdgeData, with_eval:bool=True):
         print('Reloading optimal model...')
         model.load_state_dict(torch.load(weights_filepath, weights_only=False))
         print('Loaded optimal model.')
-        return saved_train_loss, saved_test_loss, model
+
+        if with_eval:
+            return saved_train_loss, saved_test_loss, model
+        else:
+            return model
     
     else: 
         train_loss = 0
@@ -210,4 +214,7 @@ def run(edge_data:EdgeData, with_eval:bool=True):
         print('Train Loss:', train_loss)
         print('Test Loss:', test_loss)
 
-        return train_loss, test_loss, model
+        if with_eval:
+            return train_loss, test_loss, model
+        else:
+            return model
