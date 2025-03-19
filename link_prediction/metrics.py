@@ -3,7 +3,7 @@ from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 import numpy as np
 
-def evaluate_gnn(model, train, test, num_users, num_items, k=10, device='cpu'):
+def evaluate_gnn(model, train, test, num_users, num_items, k=10):
     """
     Evaluates the model by computing Recall@K and Precision@K for each user.
     
@@ -14,7 +14,6 @@ def evaluate_gnn(model, train, test, num_users, num_items, k=10, device='cpu'):
         num_users (int): Number of users.
         num_items (int): Number of items.
         k (int): The value of K for Recall@K and Precision@K.
-        device (str): Device to use for computations ('cpu' or 'cuda').
     
     Returns:
         dict: A dictionary containing Recall@K, Precision@K, and F1.
@@ -22,7 +21,6 @@ def evaluate_gnn(model, train, test, num_users, num_items, k=10, device='cpu'):
     model.eval()
     recall_list = []
     precision_list = []
-    mae_list = []
     auc_list = []
     mrr_list = []
 
@@ -42,15 +40,15 @@ def evaluate_gnn(model, train, test, num_users, num_items, k=10, device='cpu'):
             all_items = set(range(num_users, num_users + num_items))  # Item indices start from num_users
             unseen_items = sorted(all_items - train_items)
 
-            item_tensor = torch.tensor(unseen_items, dtype=torch.long, device=device)
-            user_tensor = torch.tensor([user] * int(item_tensor.size(0)), dtype=torch.long, device=device)
+            item_tensor = torch.tensor(unseen_items, dtype=torch.long)
+            user_tensor = torch.tensor([user] * int(item_tensor.size(0)), dtype=torch.long)
 
             edge_index = torch.stack([user_tensor, item_tensor])  # Shape: [2, num_unseen_items]
 
             pred_scores = model.predict(edge_index)  # Shape: [num_unseen_items]
 
-            if user==users[0]:
-                print(pred_scores)
+            # if user==users[0]:
+            #     print(pred_scores)
 
             # Rank items by predicted scores
             _, topk_indices = torch.topk(pred_scores, k=k)
@@ -77,15 +75,12 @@ def evaluate_gnn(model, train, test, num_users, num_items, k=10, device='cpu'):
             precision = true_positives / k
             precision_list.append(precision)
 
-            ground_truth = torch.tensor([1 if item in relevant_items else 0 for item in unseen_items], device=device)
-            pred = (pred_scores > 0).int()
+            ground_truth = torch.tensor([1 if item in relevant_items else 0 for item in unseen_items])
+            pred = (pred_scores > 0.5).int()
 
             if len(torch.unique(ground_truth)) >= 2:  # Check if there are at least two classes
                 auc = roc_auc_score(ground_truth, pred)
                 auc_list.append(auc)
-
-            correct = (pred == ground_truth).float().mean()
-            mae_list.append(correct.item())
 
             
 
@@ -93,7 +88,6 @@ def evaluate_gnn(model, train, test, num_users, num_items, k=10, device='cpu'):
     avg_recall = torch.tensor(recall_list).mean().item() if recall_list else 0
     avg_precision = torch.tensor(precision_list).mean().item() if precision_list else 0
     avg_f1 = (2 * avg_precision * avg_recall) / (avg_precision + avg_recall) if (avg_precision + avg_recall) > 0 else 0
-    avg_mae = torch.tensor(mae_list).mean().item() if mae_list else 0
     avg_auc = torch.tensor(auc_list).mean().item() if auc_list else 0
     avg_mrr = torch.tensor(mrr_list).mean().item() if mrr_list else 0
 
@@ -101,12 +95,11 @@ def evaluate_gnn(model, train, test, num_users, num_items, k=10, device='cpu'):
         'recall@k': avg_recall,
         'precision@k': avg_precision,
         'f1': avg_f1,
-        'mae': avg_mae,
         'auc': avg_auc,
         'mrr': avg_mrr,
     }
 
-def evaluate_mf(model, train_edges, test_edges, test_labels, num_users, num_items, k=10, device='cpu'):
+def evaluate_mf(model, train_edges, test_edges, test_labels, num_users, num_items, k=10):
     """
     Evaluates the model by computing Recall@K and Precision@K for each user.
     
@@ -117,7 +110,6 @@ def evaluate_mf(model, train_edges, test_edges, test_labels, num_users, num_item
         num_users (int): Number of users.
         num_items (int): Number of items.
         k (int): The value of K for Recall@K and Precision@K.
-        device (str): Device to use for computations ('cpu' or 'cuda').
     
     Returns:
         dict: A dictionary containing Recall@K, Precision@K, and F1.
@@ -125,7 +117,6 @@ def evaluate_mf(model, train_edges, test_edges, test_labels, num_users, num_item
     model.eval()
     recall_list = []
     precision_list = []
-    mae_list = []
     auc_list = []
     mrr_list = []
 
@@ -143,13 +134,13 @@ def evaluate_mf(model, train_edges, test_edges, test_labels, num_users, num_item
             all_items = set(range(num_users, num_users + num_items))  # Item indices start from num_users
             unseen_items = sorted(all_items - train_items)
 
-            item_tensor = torch.tensor(unseen_items, dtype=torch.long, device=device)
-            user_tensor = torch.tensor([user] * int(item_tensor.size(0)), dtype=torch.long, device=device)
+            item_tensor = torch.tensor(unseen_items, dtype=torch.long)
+            user_tensor = torch.tensor([user] * int(item_tensor.size(0)), dtype=torch.long)
 
             pred_scores = model.predict(user_tensor, item_tensor)  # Shape: [num_unseen_items]
 
-            if user==users[0]:
-                print(pred_scores)
+            # if user==users[0]:
+            #     print(pred_scores)
 
             # Rank items by predicted scores
             _, topk_indices = torch.topk(pred_scores, k=k)
@@ -178,15 +169,12 @@ def evaluate_mf(model, train_edges, test_edges, test_labels, num_users, num_item
             precision = true_positives / k
             precision_list.append(precision)
 
-            ground_truth = torch.tensor([1 if item in relevant_items else 0 for item in unseen_items], device=device)
-            pred = (pred_scores > 0).int()
+            ground_truth = torch.tensor([1 if item in relevant_items else 0 for item in unseen_items])
+            pred = (pred_scores > 0.5).int()
 
             if len(torch.unique(ground_truth)) >= 2:  # Check if there are at least two classes
                 auc = roc_auc_score(ground_truth, pred)
                 auc_list.append(auc)
-
-            correct = (pred == ground_truth).float().mean()
-            mae_list.append(correct.item())
 
             
 
@@ -194,7 +182,6 @@ def evaluate_mf(model, train_edges, test_edges, test_labels, num_users, num_item
     avg_recall = torch.tensor(recall_list).mean().item() if recall_list else 0
     avg_precision = torch.tensor(precision_list).mean().item() if precision_list else 0
     avg_f1 = (2 * avg_precision * avg_recall) / (avg_precision + avg_recall) if (avg_precision + avg_recall) > 0 else 0
-    avg_mae = torch.tensor(mae_list).mean().item() if mae_list else 0
     avg_auc = torch.tensor(auc_list).mean().item() if auc_list else 0
     avg_mrr = torch.tensor(mrr_list).mean().item() if mrr_list else 0
 
@@ -202,7 +189,6 @@ def evaluate_mf(model, train_edges, test_edges, test_labels, num_users, num_item
         'recall@k': avg_recall,
         'precision@k': avg_precision,
         'f1': avg_f1,
-        'mae': avg_mae,
         'auc': avg_auc,
         'mrr': avg_mrr
     }
@@ -248,7 +234,6 @@ def evaluate_heuristic(correlation_matrix, user_item_dict, train_edges, test_edg
         num_users (int): Number of users.
         num_items (int): Number of items.
         k (int): The value of K for Recall@K and Precision@K.
-        device (str): Device to use for computations ('cpu' or 'cuda').
     
     Returns:
         dict: A dictionary containing Recall@K, Precision@K, and F1.
@@ -317,7 +302,6 @@ def evaluate_heuristic(correlation_matrix, user_item_dict, train_edges, test_edg
             # print(predictions)
 
             correct = (predictions == ground_truth).float().mean()
-            mae_list.append(correct.item())
 
             
 
@@ -325,7 +309,6 @@ def evaluate_heuristic(correlation_matrix, user_item_dict, train_edges, test_edg
     avg_recall = torch.tensor(recall_list).mean().item() if recall_list else 0
     avg_precision = torch.tensor(precision_list).mean().item() if precision_list else 0
     avg_f1 = (2 * avg_precision * avg_recall) / (avg_precision + avg_recall) if (avg_precision + avg_recall) > 0 else 0
-    avg_mae = torch.tensor(mae_list).mean().item() if mae_list else 0
     avg_auc = torch.tensor(auc_list).mean().item() if auc_list else 0
     avg_mrr = torch.tensor(mrr_list).mean().item() if mrr_list else 0
 
@@ -333,7 +316,6 @@ def evaluate_heuristic(correlation_matrix, user_item_dict, train_edges, test_edg
         'recall@k': avg_recall,
         'precision@k': avg_precision,
         'f1': avg_f1,
-        'mae': avg_mae,
         'auc': avg_auc,
         'mrr': avg_mrr,
     }

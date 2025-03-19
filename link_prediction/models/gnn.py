@@ -15,12 +15,12 @@ from torch_scatter import scatter
 from torch_geometric.loader import DataLoader
 
 # Repository Imports
-from preprocess import get_edge_indexes
-from metrics import evaluate_gnn
+from link_prediction.metrics import evaluate_gnn
+from typesafety import EdgeData, get_weights_filepath, ModelType, PredType
 
 
 class GCN(nn.Module):
-    def __init__(self, hidden_size, num_users, num_items, embedding_dim):
+    def __init__(self, num_users, num_items, embedding_dim=16, hidden_size=64):
         super().__init__()
         self.num_users = num_users
         self.num_items = num_items
@@ -45,7 +45,9 @@ class GCN(nn.Module):
         self.edge_fc = nn.Sequential(
             nn.Linear(2 * embedding_dim, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, 1))
+            nn.Linear(hidden_size, 1),
+            nn.Sigmoid(),
+            )
         
         # Batch normalization
         self.bn1 = nn.BatchNorm1d(hidden_size)
@@ -97,41 +99,27 @@ class GCN(nn.Module):
         return pred.squeeze(-1)
     
     
-def run():
-    pos_edge_index, neg_edge_index, num_users, num_items = get_edge_indexes()
+def run(edge_data:EdgeData, with_eval:bool=True):
 
-    num_pos_edges = pos_edge_index.size(1)
-    num_neg_edges = neg_edge_index.size(1)
+    num_users = edge_data.num_users
+    num_items = edge_data.num_items
 
-    train_ratio = 0.8  # 80% for training, 20% for testing
+    pos_train_edges = edge_data.pos_train_edges
+    pos_test_edges = edge_data.pos_test_edges
 
-    num_pos_train = int(num_pos_edges * train_ratio)
-    num_neg_train = int(num_neg_edges * train_ratio)
-    num_pos_test = num_pos_edges - num_pos_train
-    num_neg_test = num_neg_edges - num_neg_train
-
-    # Shuffle indices while keeping edge_index and ratings in sync
-    torch.manual_seed(17)
-    pos_perm = torch.randperm(num_pos_edges)
-    torch.manual_seed(31)
-    neg_perm = torch.randperm(num_neg_edges)
-
-    pos_train_edges = pos_edge_index[:, pos_perm[:num_pos_train]]  # Select first 80% edges
-    pos_test_edges = pos_edge_index[:, pos_perm[num_pos_train:]]   # Select remaining 20%
-
-    neg_train_edges = neg_edge_index[:, neg_perm[:num_neg_train]]  # Select first 80% edges
-    neg_test_edges = neg_edge_index[:, neg_perm[num_neg_train:]]   # Select remaining 20%
+    neg_train_edges = edge_data.neg_train_edges
+    neg_test_edges = edge_data.neg_test_edges
 
     train_edges = torch.cat([pos_train_edges, neg_train_edges], dim=1)
     test_edges = torch.cat([pos_test_edges, neg_test_edges], dim=1)
 
     train_labels = torch.cat([
-        torch.ones(num_pos_train, dtype=torch.float32),  # Positive edges
-        torch.zeros(num_neg_train, dtype=torch.float32)  # Negative edges
+        torch.ones(pos_train_edges.size(1), dtype=torch.float32),  # Positive edges
+        torch.zeros(neg_train_edges.size(1), dtype=torch.float32)  # Negative edges
     ])
     test_labels = torch.cat([
-        torch.ones(num_pos_test, dtype=torch.float32),  # Positive edges
-        torch.zeros(num_neg_test, dtype=torch.float32)  # Negative edges
+        torch.ones(pos_test_edges.size(1), dtype=torch.float32),  # Positive edges
+        torch.zeros(neg_test_edges.size(1), dtype=torch.float32)  # Negative edges
     ])
 
     # Create graph data structure
@@ -152,17 +140,14 @@ def run():
     model = GCN(hidden_size=hidden_size, num_users=num_users, num_items=num_items, 
                 embedding_dim=embedding_dim)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    criterion = nn.BCEWithLogitsLoss()  
+    criterion = nn.BCELoss()  
 
     num_epochs = 500
 
+    weights_filepath = get_weights_filepath(pred_type=PredType.LP, model_type=ModelType.GNN, subsampling_percent=edge_data.subsampling_percent, training_split=edge_data.train_ratio)
 
-
-
-    weights_file_path = 'models/weights/gnn_weights.pth'
-
-    if os.path.exists(weights_file_path):
-        model.load_state_dict(torch.load(weights_file_path, weights_only=False))
+    if os.path.exists(weights_filepath):
+        model.load_state_dict(torch.load(weights_filepath, weights_only=False))
         print('Loaded existing model weights for GCN.')
         model.eval()
     
@@ -173,13 +158,14 @@ def run():
         best_test_loss = float('inf')
         patience = 0
 
+        saved_train_loss, saved_test_loss = 0,0
+
         for epoch in progress_bar:
             # Update the progress bar description
             progress_bar.set_description(f"Epoch {epoch + 1}/{num_epochs}")
 
             model.train()
 
-            epoch_loss = 0
             optimizer.zero_grad()
 
             # Forward pass
@@ -187,19 +173,22 @@ def run():
             
             # Compute loss
             loss = criterion(pred.squeeze(-1), train_graph.edge_attr.squeeze(-1))
+            train_loss = loss.item()
             loss.backward()
             optimizer.step()
-            epoch_loss += loss.item()
+            
 
             model.eval()
             with torch.no_grad():
                 pred = model.predict(test_graph.edge_index)
-                test_loss = criterion(pred, test_graph.edge_attr.squeeze(-1))  # Use test_graph for evaluation
+                test_loss = criterion(pred, test_graph.edge_attr.squeeze(-1)).item()  # Use test_graph for evaluation
 
             # Early stopping logic
             if test_loss < best_test_loss:
                 best_test_loss = test_loss  # Update the best test loss
-                torch.save(model.state_dict(), weights_file_path)
+                torch.save(model.state_dict(), weights_filepath)
+                saved_test_loss = test_loss
+                saved_train_loss = train_loss
                 patience = 0  # Reset patience counter
             else:
                 patience += 1  # Increment patience counter
@@ -211,13 +200,26 @@ def run():
         
         if patience < temperance:
             print('Suboptimal model weights saved. Try increasing epoch count for better performance.')
-            torch.save(model.state_dict(), weights_file_path)
-        print('Saved model weights for GCN.')
+            torch.save(model.state_dict(), weights_filepath)
+        
+        else:
+            print('Saved optimal model weights for GCN.')
+
+        print('(Best) Train Loss of Saved Model:', saved_train_loss)
+        print('(Best) Test Loss of Saved Model:', saved_test_loss)
+        
+        print("Reloading optimal model...")
+        model.load_state_dict(torch.load(weights_filepath, weights_only=False))
+        print('Loaded optimal model.')
 
 
-    # Evaluate on train and test sets
-    split_metrics = evaluate_gnn(model, train_graph, test_graph, num_users, num_items, k=10)
-    for key in split_metrics.keys():
-        print(f"{key}: {split_metrics[key]}")
+    if with_eval:
+        # Evaluate on train and test sets
+        split_metrics = evaluate_gnn(model, train_graph, test_graph, num_users, num_items, k=10)
+        for key in split_metrics.keys():
+            print(f"{key}: {split_metrics[key]}")
 
-    return split_metrics
+        return split_metrics, model
+    
+    else:
+        return model

@@ -12,7 +12,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 
 # Repository Imports
-from preprocess import get_edge_indexes
+from typesafety import EdgeData, get_weights_filepath, ModelType, PredType, EdgeDataset
 
 class MF(nn.Module):
     # General Matrix Factorization Model
@@ -35,8 +35,8 @@ class MF(nn.Module):
 
         # Initialize embeddings (initialize over uniform distribution from 0.5 to 1, beneficial as decreases likelihood of 
         # useless / dead features (0s))
-        self.user_embeddings.weight.data.uniform_(0.5,1)
-        self.item_embeddings.weight.data.uniform_(0.5,1)
+        self.user_embeddings.weight.data.uniform_(-0.1,0.1)
+        self.item_embeddings.weight.data.uniform_(-0.1,0.1)
         
         # Project the embedding dimensionality vector into 1D space to get prediction between 1 and 0
         self.affine_transform = nn.Linear(in_features=embedding_dim, out_features=1)
@@ -67,49 +67,14 @@ class MF(nn.Module):
             pred = self.forward(users, items)
 
         return pred
-    
-class EdgeDataset(torch.utils.data.Dataset):
-    def __init__(self, edge_index, labels):
-        """
-        Args:
-            edge_index (torch.Tensor): Tensor of shape [2, num_edges] containing user-item pairs.
-            labels (torch.Tensor): Tensor of shape [num_edges] containing labels (0 or 1).
-        """
-        self.edge_index = edge_index.t()  # Transpose to [num_edges, 2]
-        self.labels = labels
 
-    def __len__(self):
-        return self.edge_index.size(0)
-
-    def __getitem__(self, idx):
-        user = self.edge_index[idx, 0]  # User ID
-        item = self.edge_index[idx, 1]  # Item ID
-        label = self.labels[idx]        # Label (0 or 1)
-        return user, item, label
-
-def run():
-    edge_index, ratings, num_users, num_items = get_edge_indexes()
-
-    num_edges = edge_index.size(1)
-
-    train_ratio = 0.8  # 80% for training, 20% for testing
-
-    num_train = int(num_edges * train_ratio)
-    num_test = num_edges - num_train
-
-    # Shuffle indices while keeping edge_index and ratings in sync
-    torch.manual_seed(17)
-    perm = torch.randperm(num_edges)
-
-    train_edges = edge_index[:, perm[:num_train]]  # Select first 80% edges
-    test_edges = edge_index[:, perm[num_train:]]   # Select remaining 20%
-
-    train_labels = ratings[perm[:num_train]]
-    test_labels = ratings[perm[num_train:]]
+def run(edge_data:EdgeData):
+    num_users = edge_data.num_users
+    num_items = edge_data.num_items
 
     # Split to train and test
-    train_dataset = EdgeDataset(train_edges, train_labels)
-    test_dataset = EdgeDataset(test_edges, test_labels)  
+    train_dataset = EdgeDataset(edge_data.pos_train_edges, edge_data.train_ratings)
+    test_dataset = EdgeDataset(edge_data.pos_test_edges, edge_data.test_ratings)  
         
     batch_size = 16
 
@@ -140,10 +105,10 @@ def run():
     
     saved_train_loss = 0
     saved_test_loss = 0
-    weights_file_path = 'models/weights/mf_weights.pth'
+    weights_filepath = get_weights_filepath(pred_type=PredType.EC, model_type=ModelType.MF, subsampling_percent=edge_data.subsampling_percent, training_split=edge_data.train_ratio)
 
-    if os.path.exists(weights_file_path):
-        model.load_state_dict(torch.load(weights_file_path, weights_only=False))
+    if os.path.exists(weights_filepath):
+        model.load_state_dict(torch.load(weights_filepath, weights_only=False))
         print('Loaded existing model weights for MF.')
         model.eval()
 
@@ -186,14 +151,11 @@ def run():
 
             avg_train_loss = train_loss / train_batch_count
             avg_test_loss = test_loss / test_batch_count
-            print('Train Loss:', avg_train_loss)
-            print('Test Loss:', avg_test_loss)
 
             # Early stopping logic
             if avg_test_loss < best_test_loss:
                 best_test_loss = avg_test_loss  # Update the best test loss
-                torch.save(model.state_dict(), weights_file_path)
-                print('Saved (current) optimal model weights for MF.')
+                torch.save(model.state_dict(), weights_filepath)
                 saved_train_loss = avg_train_loss
                 saved_test_loss = avg_test_loss
                 patience = 0  # Reset patience counter
@@ -207,12 +169,11 @@ def run():
 
         if patience < temperance:
             print('Suboptimal model weights saved. Try increasing epoch count for better performance.')
-            torch.save(model.state_dict(), weights_file_path)
+            torch.save(model.state_dict(), weights_filepath)
 
+        print('Saved optimal model weights.')
         print('(Best) Train Loss of Saved Model:', saved_train_loss)
         print('(Best) Test Loss of Saved Model:', saved_test_loss)
-
-        
 
     if saved_train_loss and saved_test_loss:
         return saved_train_loss, saved_test_loss

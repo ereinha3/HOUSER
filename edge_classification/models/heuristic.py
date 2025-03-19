@@ -7,7 +7,8 @@ import json
 import os
 
 # Repository Imports
-from preprocess import get_subsampled_edge_indexes
+from typesafety import EdgeData, get_weights_filepath, ModelType, PredType, HeuristicType
+
 
 def compute_sim(items1: set, items2: set):
     """
@@ -82,34 +83,22 @@ def predict_heuristic(user_item_dict:dict, avg_ratings_dict:dict, correlation_ma
     else:
         return avg_ratings_dict[item_id]
 
-def run():
+def run(edge_data:EdgeData):
     user_item_dict = {}
     avg_ratings_dict = {}
 
-    # Preprocess file to df
-    edge_index, ratings, num_users, num_items = get_subsampled_edge_indexes()
+    train_edges = edge_data.pos_train_edges
+    test_edges = edge_data.neg_train_edges
 
-    num_edges = edge_index.size(1)
+    train_ratings = edge_data.train_ratings
+    test_ratings = edge_data.test_ratings
 
-    train_ratio = 0.8  # 80% for training, 20% for testing
+    num_users = edge_data.num_users
+    num_items = edge_data.num_items
 
-    num_train = int(num_edges * train_ratio)
-    num_test = num_edges - num_train
-
-    # Shuffle indices while keeping edge_index and ratings in sync
-    torch.manual_seed(17)
-    perm = torch.randperm(num_edges)
-
-    train_edges = edge_index[:, perm[:num_train]]  # Select first 80% edges
-    test_edges = edge_index[:, perm[num_train:]]   # Select remaining 20%
-
-    train_ratings = ratings[perm[:num_train]]
-    test_ratings = ratings[perm[num_train:]]
-
-
-    user_item_dict_filepath = 'models/weights/user_item_dict.json'
-    avg_ratings_dict_filepath = 'models/weights/avg_ratings_dict.json'
-    corr_matrix_filepath = 'models/weights/corr_matrix.npy'  
+    user_item_dict_filepath = get_weights_filepath(pred_type=PredType.EC, model_type=ModelType.HEURISTIC, subsampling_percent=edge_data.subsampling_percent, training_split=edge_data.train_ratio, heuristic_type=HeuristicType.UID)
+    corr_matrix_filepath = get_weights_filepath(pred_type=PredType.EC, model_type=ModelType.HEURISTIC, subsampling_percent=edge_data.subsampling_percent, training_split=edge_data.train_ratio, heuristic_type=HeuristicType.CM)
+    avg_ratings_dict_filepath = get_weights_filepath(pred_type=PredType.EC, model_type=ModelType.HEURISTIC, subsampling_percent=edge_data.subsampling_percent, training_split=edge_data.train_ratio, heuristic_type=HeuristicType.ARD)
 
     if os.path.exists(avg_ratings_dict_filepath):
         with open(avg_ratings_dict_filepath, 'r') as f:
@@ -220,5 +209,3 @@ def run():
     print('Final Test Loss:', final_test_loss)
 
     return final_train_loss, final_test_loss
-
-run()

@@ -1,8 +1,13 @@
-edge_classification/models/weights/
-link_prediction/models/weights/
-edge_classification/amazon/
-link_prediction/amazon/
+# Ignore model weights as these are too large to commit for correlation matrix (instruction to run and save weights in README)
+edge_classification/models/weights/*
+link_prediction/models/weights/*
+
+# Ignore pycaches
 link_prediction/__pycache__
 edge_classification/__pycache__
 link_prediction/models/__pycache__
 edge_classification/models/__pycache__
+__pycache__
+
+# Ignore dataset (instructions to download in README.md)
+data/amazon

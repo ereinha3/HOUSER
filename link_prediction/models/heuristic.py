@@ -7,8 +7,8 @@ import json
 import os
 
 # Repository Imports
-from preprocess import get_subsampled_edge_indexes
-from metrics import evaluate_heuristic
+from link_prediction.metrics import evaluate_heuristic
+from typesafety import EdgeData, get_weights_filepath, PredType, ModelType, HeuristicType
 
 def compute_sim(items1: set, items2: set):
     """
@@ -26,48 +26,6 @@ def compute_sim(items1: set, items2: set):
         return len(items1.intersection(items2)) / union
     else:
         return 0
-
-def make_correlation_matrix_parallel(user_item_dict:dict, num_users: int, num_threads: int = 4):
-    """
-    Creates a correlation matrix where each entry (i, j) is the Jaccard similarity
-    between user i and user j. This function is multi-threaded.
-    
-    Args:
-        user_item_dict (dict): A dictionary where keys are user IDs and values are sets of item IDs.
-        num_users (int): Total number of users.
-        num_threads (int): Number of threads to use for parallel computation.
-    
-    Returns:
-        np.ndarray: Correlation matrix of shape [num_users, num_users].
-    """
-    correlation_matrix = np.zeros((num_users, num_users))
-    
-    # Function to compute similarity for a single pair (i, j)
-    def compute_pair(i, j):
-        similarity = compute_sim(user_item_dict[i], user_item_dict[j])
-        return i, j, similarity
-    
-    # Use ThreadPoolExecutor for parallel computation
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        futures = []
-        
-        # Submit tasks for all pairs (i, j) where i < j
-        for i in range(num_users):
-            if i % 1000 == 999:
-                print(f"Processed {i+1} users.")
-            for j in range(i + 1, num_users):
-                futures.append(executor.submit(compute_pair, i, j))
-        
-        # Collect results as they complete
-        for future in as_completed(futures):
-            i, j, similarity = future.result()
-            correlation_matrix[i][j] = similarity
-            correlation_matrix[j][i] = similarity
-    
-    # Set diagonal to 0 (avoiding self-similarity for prediction)
-    np.fill_diagonal(correlation_matrix, 0)
-    
-    return correlation_matrix
 
 def make_correlation_matrix(user_item_dict:dict, num_users:int):
     """ 
@@ -93,52 +51,32 @@ def make_correlation_matrix(user_item_dict:dict, num_users:int):
         correlation_matrix[i][i] = 0
     return correlation_matrix
 
-def run():
+def run(edge_data:EdgeData):
     # Initialize User-Item Dict
     user_item_dict = {}
 
-    # Preprocess file to df
-    pos_edge_index, neg_edge_index, num_users, num_items = get_subsampled_edge_indexes()
+    num_users = edge_data.num_users
+    num_items = edge_data.num_items
 
-    num_pos_edges = pos_edge_index.size(1)
-    num_neg_edges = neg_edge_index.size(1)
+    pos_train_edges = edge_data.pos_train_edges
+    pos_test_edges = edge_data.pos_test_edges
 
-    train_ratio = 0.8  # 80% for training, 20% for testing
-
-    num_pos_train = int(num_pos_edges * train_ratio)
-    num_neg_train = int(num_neg_edges * train_ratio)
-    num_pos_test = num_pos_edges - num_pos_train
-    num_neg_test = num_neg_edges - num_neg_train
-
-    # Shuffle indices while keeping edge_index and ratings in sync
-    torch.manual_seed(17)
-    pos_perm = torch.randperm(num_pos_edges)
-    torch.manual_seed(31)
-    neg_perm = torch.randperm(num_neg_edges)
-
-    pos_train_edges = pos_edge_index[:, pos_perm[:num_pos_train]]  # Select first 80% edges
-    pos_test_edges = pos_edge_index[:, pos_perm[num_pos_train:]]   # Select remaining 20%
-
-    neg_train_edges = neg_edge_index[:, neg_perm[:num_neg_train]]  # Select first 80% edges
-    neg_test_edges = neg_edge_index[:, neg_perm[num_neg_train:]]   # Select remaining 20%
+    neg_train_edges = edge_data.neg_train_edges
+    neg_test_edges = edge_data.neg_test_edges
 
     train_edges = torch.cat([pos_train_edges, neg_train_edges], dim=1)
     test_edges = torch.cat([pos_test_edges, neg_test_edges], dim=1)
 
-    train_labels = torch.cat([
-        torch.ones(num_pos_train, dtype=torch.float32),  # Positive edges
-        torch.zeros(num_neg_train, dtype=torch.float32)  # Negative edges
-    ])
     test_labels = torch.cat([
-        torch.ones(num_pos_test, dtype=torch.float32),  # Positive edges
-        torch.zeros(num_neg_test, dtype=torch.float32)  # Negative edges
+        torch.ones(pos_test_edges.size(1), dtype=torch.float32),  # Positive edges
+        torch.zeros(neg_test_edges.size(1), dtype=torch.float32)  # Negative edges
     ])
 
-    dict_filepath = 'models/weights/user_item_dict.json'
-    corr_matrix_filepath = 'models/weights/corr_matrix.npy'
+    user_item_dict_filepath = get_weights_filepath(pred_type=PredType.LP, model_type=ModelType.HEURISTIC, subsampling_percent=edge_data.subsampling_percent, training_split=edge_data.train_ratio, heuristic_type=HeuristicType.UID)
+    corr_matrix_filepath = get_weights_filepath(pred_type=PredType.LP, model_type=ModelType.HEURISTIC, subsampling_percent=edge_data.subsampling_percent, training_split=edge_data.train_ratio, heuristic_type=HeuristicType.CM)
 
-    if os.path.exists(dict_filepath):
-        with open(dict_filepath, 'r') as f:
+    if os.path.exists(user_item_dict_filepath):
+        with open(user_item_dict_filepath, 'r') as f:
             user_item_dict = json.load(f)
             print('Loaded User-Item Dictionary.')
             # Required because json.dump converts keys to strings
@@ -161,7 +99,7 @@ def run():
 
         print('Finished Creating User-Item Dictionary...')
 
-        with open(dict_filepath, 'w') as f:
+        with open(user_item_dict_filepath, 'w') as f:
             json.dump(user_item_dict, f, indent=4)
             print('Saved User-Item Dictionary.')
 
@@ -177,15 +115,7 @@ def run():
     else:
         print('Making Correlation Matrix...')
 
-        parallel = False
-
-        print(f"{'Not' if not parallel else ''} Using Parallelized Matrix Creation.")
-
-        # Create the correlation matrix which will be num_user x num_user
-        if parallel:
-            correlation_matrix = make_correlation_matrix_parallel(user_item_dict, num_users)
-        else:
-            correlation_matrix = make_correlation_matrix(user_item_dict, num_users)        
+        correlation_matrix = make_correlation_matrix(user_item_dict, num_users)        
 
         print('Finished Making Correlation Matrix...')
 
